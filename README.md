@@ -14,6 +14,7 @@ Inference of [Stable Diffusion](https://github.com/CompVis/stable-diffusion) in 
     - !!!The VAE in SDXL encounters NaN issues under FP16, but unfortunately, the ggml_conv_2d only operates under FP16. Hence, a parameter is needed to specify the VAE that has fixed the FP16 NaN issue. You can find it here: [SDXL VAE FP16 Fix](https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/blob/main/sdxl_vae.safetensors).
 
 - [SD-Turbo](https://huggingface.co/stabilityai/sd-turbo) and [SDXL-Turbo](https://huggingface.co/stabilityai/sdxl-turbo) support
+- [PhotoMaker](https://github.com/TencentARC/PhotoMaker) support.
 - 16-bit, 32-bit float support
 - 4-bit, 5-bit and 8-bit integer quantization support
 - Accelerated memory-efficient CPU inference
@@ -59,6 +60,9 @@ Inference of [Stable Diffusion](https://github.com/CompVis/stable-diffusion) in 
 - [ ] k-quants support
 
 ## Usage
+
+For most users, you can download the built executable program from the latest [release](https://github.com/leejet/stable-diffusion.cpp/releases/latest).
+If the built product does not meet your requirements, you can choose to build it manually.
 
 ### Get the Code
 
@@ -148,7 +152,7 @@ cmake --build . --config Release
 ### Run
 
 ```
-usage: ./build/bin/sd [arguments]
+usage: ./bin/sd [arguments]
 
 arguments:
   -h, --help                         show this help message and exit
@@ -160,6 +164,9 @@ arguments:
   --taesd [TAESD_PATH]               path to taesd. Using Tiny AutoEncoder for fast decoding (low quality)
   --control-net [CONTROL_PATH]       path to control net model
   --embd-dir [EMBEDDING_PATH]        path to embeddings.
+  --stacked-id-embd-dir [DIR]        path to PHOTOMAKER stacked id embeddings.
+  --input-id-images-dir [DIR]        path to PHOTOMAKER input id images dir.
+  --normalize-input                  normalize PHOTOMAKER input id images
   --upscale-model [ESRGAN_PATH]      path to esrgan model. Upscale images after generate, just RealESRGAN_x4plus_anime_6B supported by now.
   --upscale-repeats                  Run the ESRGAN upscaler this many times (default 1)
   --type [TYPE]                      weight type (f32, f16, q4_0, q4_1, q5_0, q5_1, q8_0)
@@ -172,6 +179,7 @@ arguments:
   -n, --negative-prompt PROMPT       the negative prompt (default: "")
   --cfg-scale SCALE                  unconditional guidance scale: (default: 7.0)
   --strength STRENGTH                strength for noising/unnoising (default: 0.75)
+  --style-ratio STYLE-RATIO          strength for keeping input identity (default: 20%)
   --control-strength STRENGTH        strength to apply Control Net (default: 0.9)
                                      1.0 corresponds to full destruction of information in init image
   -H, --height H                     image height, in pixel space (default: 512)
@@ -296,6 +304,39 @@ You can use ESRGAN to upscale the generated images. At the moment, only the [Rea
 sd -m ../models/v1-5-pruned-emaonly.safetensors -p "a lovely cat" --upscale-model ../models/RealESRGAN_x4plus_anime_6B.pth
 ```
 
+#### Using PhotoMaker to personalize image generation
+
+You can use [PhotoMaker](https://github.com/TencentARC/PhotoMaker) to personalize generated images with your own ID.
+
+**NOTE**, currently PhotoMaker **ONLY** works with **SDXL** (any SDXL model files will work).
+
+Download PhotoMaker model file (in safetensor format) [here](https://huggingface.co/bssrdf/PhotoMaker). The official release of the model file (in .bin format) does not work with ```stablediffusion.cpp```.
+
+- Specify the PhotoMaker model path using the `--stacked-id-embd-dir PATH` parameter.
+- Specify the input images path using the `--input-id-images-dir PATH` parameter.
+  - input images **must** have the same width and height for preprocessing (to be improved)
+
+In prompt, make sure you have a class word followed by the trigger word ```"img"``` (hard-coded for now). The class word could be one of ```"man, woman, girl, boy"```. If input ID images contain asian faces, add ```Asian``` before the class
+word.
+
+Another PhotoMaker specific parameter:
+
+- ```--style-ratio  (0-100)%```: default is 20 and 10-20 typically gets good results. Lower ratio means more faithfully following input ID (not necessarily better quality).
+
+Other parameters recommended for running Photomaker:
+
+- ```--cfg-scale 5.0```
+- ```-H 1024```
+- ```-W 1024```
+
+If on low memory GPUs (<= 8GB), recommend running with ```--vae-on-cpu``` option to get artifact free images.
+
+Example:
+
+```bash
+bin/sd -m ../models/sdxlUnstableDiffusers_v11.safetensors  --vae ../models/sdxl_vae.safetensors --stacked-id-embd-dir ../models/photomaker-v1.safetensors --input-id-images-dir ../assets/examples/scarletthead_woman -p "a girl img, retro futurism, retro game art style but extremely beautiful, intricate details, masterpiece, best quality, space-themed, cosmic, celestial, stars, galaxies, nebulas, planets, science fiction, highly detailed" -n "realistic, photo-realistic, worst quality, greyscale, bad anatomy, bad hands, error, text" --cfg-scale 5.0  --sampling-method euler -H 1024 -W 1024 --style-ratio 10 --vae-on-cpu -o output.png
+```
+
 ### Docker
 
 #### Building using Docker
@@ -319,6 +360,19 @@ docker run -v /path/to/models:/models -v /path/to/output/:/output sd [args...]
 |  **Memory** (txt2img - 512 x 512) | ~2.8G | ~2.3G | ~2.1G | ~2.0G | ~2.0G | ~2.0G | ~2.0G |
 |  **Memory** (txt2img - 512 x 512) *with Flash Attention* | ~2.4G | ~1.9G | ~1.6G | ~1.5G | ~1.5G | ~1.5G | ~1.5G |
 
+## Bindings
+
+These projects wrap `stable-diffusion.cpp` for easier use in other languages/frameworks.
+
+* Golang: [seasonjs/stable-diffusion](https://github.com/seasonjs/stable-diffusion)
+* C#: [DarthAffe/StableDiffusion.NET](https://github.com/DarthAffe/StableDiffusion.NET)
+
+## UIs
+
+These projects use `stable-diffusion.cpp` as a backend for their image generation.
+
+- [Jellybox](https://jellybox.com)
+
 ## Contributors
 
 Thank you to all the people who have already contributed to stable-diffusion.cpp!
@@ -335,3 +389,4 @@ Thank you to all the people who have already contributed to stable-diffusion.cpp
 - [k-diffusion](https://github.com/crowsonkb/k-diffusion)
 - [latent-consistency-model](https://github.com/luosiallen/latent-consistency-model)
 - [generative-models](https://github.com/Stability-AI/generative-models/)
+- [PhotoMaker](https://github.com/TencentARC/PhotoMaker)

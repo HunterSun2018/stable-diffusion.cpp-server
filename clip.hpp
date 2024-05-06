@@ -75,9 +75,13 @@ class CLIPTokenizer {
 private:
     SDVersion version = VERSION_1_x;
     std::map<int, std::u32string> byte_encoder;
+    std::map<std::u32string, int> byte_decoder;
     std::map<std::u32string, int> encoder;
+    std::map<int, std::u32string> decoder;
     std::map<std::pair<std::u32string, std::u32string>, int> bpe_ranks;
     std::regex pat;
+    int encoder_len;
+    int bpe_len;
 
     static std::string strip(const std::string& str) {
         std::string::size_type start = str.find_first_not_of(" \t\n\r\v\f");
@@ -118,7 +122,11 @@ public:
 
     void load_from_merges(const std::string& merges_utf8_str) {
         auto byte_unicode_pairs = bytes_to_unicode();
-        byte_encoder            = std::map<int, std::u32string>(byte_unicode_pairs.begin(), byte_unicode_pairs.end());
+        // printf("byte_unicode_pairs have %lu pairs \n", byte_unicode_pairs.size());
+        byte_encoder = std::map<int, std::u32string>(byte_unicode_pairs.begin(), byte_unicode_pairs.end());
+        for (auto& pair : byte_unicode_pairs) {
+            byte_decoder[pair.second] = pair.first;
+        }
         // for (auto & pair: byte_unicode_pairs) {
         //     std::cout << pair.first << ": " << pair.second << std::endl;
         // }
@@ -138,6 +146,8 @@ public:
             size_t space_pos = merge.find(' ');
             merge_pairs.emplace_back(merge.substr(0, space_pos), merge.substr(space_pos + 1));
             // LOG_DEBUG("%s", utf32_to_utf8(merge.substr(space_pos + 1)).c_str());
+            // printf("%s :: %s | %s \n", utf32_to_utf8(merge).c_str(), utf32_to_utf8(merge.substr(0, space_pos)).c_str(),
+            //                     utf32_to_utf8(merge.substr(space_pos + 1)).c_str());
         }
         std::vector<std::u32string> vocab;
         for (const auto& pair : byte_unicode_pairs) {
@@ -154,14 +164,35 @@ public:
         LOG_DEBUG("vocab size: %llu", vocab.size());
         int i = 0;
         for (const auto& token : vocab) {
-            encoder[token] = i++;
+            encoder[token] = i;
+            decoder[i]     = token;
+            i++;
+        }
+        encoder_len = i;
+
+        auto it = encoder.find(utf8_to_utf32("img</w>"));
+        if (it != encoder.end()) {
+            LOG_DEBUG(" trigger word img already in vocab");
+        } else {
+            LOG_DEBUG(" trigger word img not in vocab yet");
         }
 
         int rank = 0;
         for (const auto& merge : merge_pairs) {
             bpe_ranks[merge] = rank++;
         }
+        bpe_len = rank;
     };
+
+    void add_token(const std::string& text) {
+        std::u32string token = utf8_to_utf32(text);
+        auto it              = encoder.find(token);
+        if (it != encoder.end()) {
+            encoder[token]       = encoder_len;
+            decoder[encoder_len] = token;
+            encoder_len++;
+        }
+    }
 
     std::u32string bpe(const std::u32string& token) {
         std::vector<std::u32string> word;
@@ -243,6 +274,7 @@ public:
                               size_t max_length = 0,
                               bool padding      = false) {
         std::vector<int32_t> tokens = encode(text, on_new_token_cb);
+
         tokens.insert(tokens.begin(), BOS_TOKEN_ID);
         if (max_length > 0) {
             if (tokens.size() > max_length - 1) {
@@ -259,7 +291,32 @@ public:
                 }
             }
         }
+
         return tokens;
+    }
+
+    std::string decode(const std::vector<int>& tokens) {
+        std::string text = "";
+        for (int t : tokens) {
+            if (t == 49406 || t == 49407)
+                continue;
+            std::u32string ts = decoder[t];
+            // printf("%d, %s \n", t,  utf32_to_utf8(ts).c_str());
+            std::string s = utf32_to_utf8(ts);
+            if (s.length() >= 4 && ends_with(s, "</w>")) {
+                text += " " + s.replace(s.length() - 4, s.length() - 1, "");
+            } else {
+                text += " " + s;
+            }
+        }
+        // std::vector<unsigned char> bytes;
+        // for (auto c : text){
+        //     bytes.push_back(byte_decoder[c]);
+        // }
+
+        // std::string s((char *)bytes.data());
+        // std::string s = "";
+        return trim(text);
     }
 
     std::vector<int> encode(std::string text, on_new_token_cb_t on_new_token_cb) {
@@ -308,7 +365,8 @@ public:
             ss << "\"" << token << "\", ";
         }
         ss << "]";
-        LOG_DEBUG("split prompt \"%s\" to tokens %s", original_text.c_str(), ss.str().c_str());
+        // LOG_DEBUG("split prompt \"%s\" to tokens %s", original_text.c_str(), ss.str().c_str());
+        // printf("split prompt \"%s\" to tokens %s \n", original_text.c_str(), ss.str().c_str());
         return bpe_tokens;
     }
 };
@@ -469,7 +527,8 @@ public:
         : d_model(d_model),
           n_head(n_head),
           intermediate_size(intermediate_size) {
-        blocks["self_attn"]   = std::shared_ptr<GGMLBlock>(new MultiheadAttention(d_model, n_head));
+        blocks["self_attn"] = std::shared_ptr<GGMLBlock>(new MultiheadAttention(d_model, n_head, true));
+
         blocks["layer_norm1"] = std::shared_ptr<GGMLBlock>(new LayerNorm(d_model));
         blocks["layer_norm2"] = std::shared_ptr<GGMLBlock>(new LayerNorm(d_model));
 
@@ -508,7 +567,7 @@ public:
     struct ggml_tensor* forward(struct ggml_context* ctx, struct ggml_tensor* x, int clip_skip = -1, bool mask = true) {
         // x: [N, n_token, d_model]
         int layer_idx = n_layer - 1;
-        LOG_DEBUG("clip_skip %d", clip_skip);
+        // LOG_DEBUG("clip_skip %d", clip_skip);
         if (clip_skip > 0) {
             layer_idx = n_layer - clip_skip;
         }
@@ -520,7 +579,7 @@ public:
             }
             std::string name = "layers." + std::to_string(i);
             auto layer       = std::dynamic_pointer_cast<CLIPLayer>(blocks[name]);
-            x                = layer->forward(ctx, x);  // [N, n_token, d_model]
+            x                = layer->forward(ctx, x, mask);  // [N, n_token, d_model]
             // LOG_DEBUG("layer %d", i);
         }
         return x;
@@ -558,11 +617,14 @@ public:
         auto token_embed_weight    = params["token_embedding.weight"];
         auto position_embed_weight = params["position_embedding.weight"];
 
-        GGML_ASSERT(input_ids->ne[0] <= position_embed_weight->ne[0]);
+        GGML_ASSERT(input_ids->ne[0] == position_embed_weight->ne[1]);
+        input_ids            = ggml_reshape_3d(ctx, input_ids, input_ids->ne[0], 1, input_ids->ne[1]);
+        auto token_embedding = ggml_get_rows(ctx, custom_embed_weight != NULL ? custom_embed_weight : token_embed_weight, input_ids);
+        token_embedding      = ggml_reshape_3d(ctx, token_embedding, token_embedding->ne[0], token_embedding->ne[1], token_embedding->ne[3]);
 
         // token_embedding + position_embedding
         auto x = ggml_add(ctx,
-                          ggml_get_rows(ctx, custom_embed_weight != NULL ? custom_embed_weight : token_embed_weight, input_ids),
+                          token_embedding,
                           position_embed_weight);  // [N, n_token, embed_dim]
         return x;
     }
@@ -717,11 +779,6 @@ public:
 };
 
 class CLIPVisionModel : public GGMLBlock {
-protected:
-    void init_params(struct ggml_context* ctx, ggml_type wtype) {
-        params["visual_projection"] = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, projection_dim, hidden_size);
-    }
-
 public:
     // network hparams
     int32_t num_channels      = 3;
@@ -732,16 +789,14 @@ public:
     int32_t intermediate_size = 4096;
     int32_t n_head            = 16;
     int32_t n_layer           = 24;
-    int32_t projection_dim    = 768;
 
 public:
-    CLIPVisionModel(CLIPVersion version = OPEN_CLIP_VIT_H_14) {
+    CLIPVisionModel(CLIPVersion version = OPENAI_CLIP_VIT_L_14) {
         if (version == OPEN_CLIP_VIT_H_14) {
             hidden_size       = 1280;
             intermediate_size = 5120;
             n_head            = 16;
             n_layer           = 32;
-            projection_dim    = 1024;
         } else if (version == OPEN_CLIP_VIT_BIGG_14) {
             hidden_size       = 1664;
             intermediate_size = 8192;
@@ -755,9 +810,8 @@ public:
         blocks["post_layernorm"] = std::shared_ptr<GGMLBlock>(new LayerNorm(hidden_size));
     }
 
-    struct ggml_tensor* forward(struct ggml_context* ctx, struct ggml_tensor* pixel_values) {
+    struct ggml_tensor* forward(struct ggml_context* ctx, struct ggml_tensor* pixel_values, bool return_pooled = true) {
         // pixel_values: [N, num_channels, image_size, image_size]
-        // return: // [N, projection_dim]
         auto embeddings     = std::dynamic_pointer_cast<CLIPVisionEmbeddings>(blocks["embeddings"]);
         auto pre_layernorm  = std::dynamic_pointer_cast<LayerNorm>(blocks["pre_layernorm"]);
         auto encoder        = std::dynamic_pointer_cast<CLIPEncoder>(blocks["encoder"]);
@@ -765,26 +819,60 @@ public:
 
         auto x = embeddings->forward(ctx, pixel_values);  // [N, num_positions, embed_dim]
         x      = pre_layernorm->forward(ctx, x);
-        x      = encoder->forward(ctx, x, -1, true);
+        x      = encoder->forward(ctx, x, -1, false);
         x      = post_layernorm->forward(ctx, x);  // [N, n_token, hidden_size]
 
-        GGML_ASSERT(x->ne[2] == 1);
-        int64_t max_token_idx  = 0;
-        ggml_tensor* pooled    = ggml_view_1d(ctx, x, x->ne[0], x->nb[1] * max_token_idx);  // assert N == 1
-        auto visual_projection = params["visual_projection"];
-        pooled                 = ggml_mul_mat(ctx, ggml_cont(ctx, ggml_transpose(ctx, visual_projection)), pooled);
-        return pooled;  // [N, projection_dim]
+        GGML_ASSERT(x->ne[3] == 1);
+        if (return_pooled) {
+            ggml_tensor* pooled = ggml_cont(ctx, ggml_view_2d(ctx, x, x->ne[0], x->ne[2], x->nb[2], 0));
+            return pooled;  // [N, hidden_size]
+        } else {
+            return x;  // [N, n_token, hidden_size]
+        }
+    }
+};
+
+class CLIPProjection : public UnaryBlock {
+protected:
+    int64_t in_features;
+    int64_t out_features;
+    bool transpose_weight;
+
+    void init_params(struct ggml_context* ctx, ggml_type wtype) {
+        if (transpose_weight) {
+            LOG_ERROR("transpose_weight");
+            params["weight"] = ggml_new_tensor_2d(ctx, wtype, out_features, in_features);
+        } else {
+            params["weight"] = ggml_new_tensor_2d(ctx, wtype, in_features, out_features);
+        }
+    }
+
+public:
+    CLIPProjection(int64_t in_features,
+                   int64_t out_features,
+                   bool transpose_weight = false)
+        : in_features(in_features),
+          out_features(out_features),
+          transpose_weight(transpose_weight) {}
+
+    struct ggml_tensor* forward(struct ggml_context* ctx, struct ggml_tensor* x) {
+        struct ggml_tensor* w = params["weight"];
+        if (transpose_weight) {
+            w = ggml_cont(ctx, ggml_transpose(ctx, w));
+        }
+        return ggml_nn_linear(ctx, x, w, NULL);
     }
 };
 
 class CLIPVisionModelProjection : public GGMLBlock {
 public:
     int32_t hidden_size    = 1024;
-    int32_t projection_dim = 1024;
+    int32_t projection_dim = 768;
     int32_t image_size     = 224;
 
 public:
-    CLIPVisionModelProjection(CLIPVersion version = OPEN_CLIP_VIT_H_14) {
+    CLIPVisionModelProjection(CLIPVersion version   = OPENAI_CLIP_VIT_L_14,
+                              bool transpose_proj_w = false) {
         if (version == OPEN_CLIP_VIT_H_14) {
             hidden_size    = 1280;
             projection_dim = 1024;
@@ -792,17 +880,17 @@ public:
             hidden_size = 1664;
         }
 
-        blocks["visual_model"]      = std::shared_ptr<GGMLBlock>(new CLIPVisionModel(version));
-        blocks["visual_projection"] = std::shared_ptr<GGMLBlock>(new Linear(hidden_size, projection_dim, false));
+        blocks["vision_model"]      = std::shared_ptr<GGMLBlock>(new CLIPVisionModel(version));
+        blocks["visual_projection"] = std::shared_ptr<GGMLBlock>(new CLIPProjection(hidden_size, projection_dim, transpose_proj_w));
     }
 
     struct ggml_tensor* forward(struct ggml_context* ctx, struct ggml_tensor* pixel_values) {
         // pixel_values: [N, num_channels, image_size, image_size]
-        // return: [N, num_positions, projection_dim]
-        auto visual_model      = std::dynamic_pointer_cast<CLIPVisionModel>(blocks["visual_model"]);
-        auto visual_projection = std::dynamic_pointer_cast<Linear>(blocks["visual_projection"]);
+        // return: [N, projection_dim]
+        auto vision_model      = std::dynamic_pointer_cast<CLIPVisionModel>(blocks["vision_model"]);
+        auto visual_projection = std::dynamic_pointer_cast<CLIPProjection>(blocks["visual_projection"]);
 
-        auto x = visual_model->forward(ctx, pixel_values);  // [N, embed_dim]
+        auto x = vision_model->forward(ctx, pixel_values);  // [N, hidden_size]
         x      = visual_projection->forward(ctx, x);        // [N, projection_dim]
 
         return x;  // [N, projection_dim]
@@ -851,22 +939,6 @@ struct FrozenCLIPEmbedderWithCustomWords : public GGMLModule {
         return "clip";
     }
 
-    size_t get_params_mem_size() {
-        size_t params_mem_size = text_model.get_params_mem_size();
-        if (version == VERSION_XL) {
-            params_mem_size += text_model2.get_params_mem_size();
-        }
-        return params_mem_size;
-    }
-
-    size_t get_params_num() {
-        size_t params_num = text_model.get_params_num();
-        if (version == VERSION_XL) {
-            params_num += text_model2.get_params_num();
-        }
-        return params_num;
-    }
-
     void set_clip_skip(int clip_skip) {
         text_model.set_clip_skip(clip_skip);
         if (version == VERSION_XL) {
@@ -888,8 +960,12 @@ struct FrozenCLIPEmbedderWithCustomWords : public GGMLModule {
             LOG_ERROR("embedding '%s' failed", embd_name.c_str());
             return false;
         }
+        if (std::find(readed_embeddings.begin(), readed_embeddings.end(), embd_name) != readed_embeddings.end()) {
+            LOG_DEBUG("embedding already read in: %s", embd_name.c_str());
+            return true;
+        }
         struct ggml_init_params params;
-        params.mem_size               = 32 * 1024;  // max for custom embeddings 32 KB
+        params.mem_size               = 10 * 1024 * 1024;  // max for custom embeddings 10 MB
         params.mem_buffer             = NULL;
         params.no_alloc               = false;
         struct ggml_context* embd_ctx = ggml_init(params);
@@ -924,9 +1000,21 @@ struct FrozenCLIPEmbedderWithCustomWords : public GGMLModule {
                                 struct ggml_tensor* embeddings,
                                 size_t max_token_idx = 0,
                                 bool return_pooled   = false) {
+        size_t N       = input_ids->ne[1];
+        size_t n_token = input_ids->ne[0];
+        if (input_ids != NULL && input_ids->ne[0] > text_model.n_token) {
+            GGML_ASSERT(input_ids->ne[0] % text_model.n_token == 0);
+            input_ids = ggml_reshape_2d(ctx, input_ids, text_model.n_token, input_ids->ne[0] / text_model.n_token);
+        }
+        if (input_ids2 != NULL && input_ids2->ne[0] > text_model2.n_token) {
+            GGML_ASSERT(input_ids2->ne[0] % text_model2.n_token == 0);
+            input_ids2 = ggml_reshape_2d(ctx, input_ids2, text_model2.n_token, input_ids2->ne[0] / text_model2.n_token);
+        }
+
         if (return_pooled) {
             return text_model2.forward(ctx, input_ids2, NULL, max_token_idx, return_pooled);
         }
+
         auto hidden_states = text_model.forward(ctx, input_ids, embeddings);  // [N, n_token, hidden_size]
         // LOG_DEBUG("hidden_states: %d %d %d %d", hidden_states->ne[0], hidden_states->ne[1], hidden_states->ne[2], hidden_states->ne[3]);
         if (version == VERSION_XL) {
@@ -952,6 +1040,7 @@ struct FrozenCLIPEmbedderWithCustomWords : public GGMLModule {
 
             hidden_states = ggml_cont(ctx, ggml_permute(ctx, hidden_states, 1, 2, 0, 3));
         }
+        hidden_states = ggml_reshape_3d(ctx, hidden_states, hidden_states->ne[0], n_token, N);
         // LOG_DEBUG("hidden_states: %d %d %d %d", hidden_states->ne[0], hidden_states->ne[1], hidden_states->ne[2], hidden_states->ne[3]);
         return hidden_states;
     }
@@ -1009,6 +1098,205 @@ struct FrozenCLIPEmbedderWithCustomWords : public GGMLModule {
         return tokenize(text, text_model.n_token, padding);
     }
 
+    std::tuple<std::vector<int>, std::vector<float>, std::vector<bool>>
+    tokenize_with_trigger_token(std::string text,
+                                int num_input_imgs,
+                                int32_t image_token,
+                                bool padding = false) {
+        return tokenize_with_trigger_token(text, num_input_imgs, image_token,
+                                           text_model.n_token, padding);
+    }
+
+    std::vector<int> convert_token_to_id(std::string text) {
+        auto on_new_token_cb = [&](std::string& str, std::vector<int32_t>& bpe_tokens) -> bool {
+            size_t word_end       = str.find(",");
+            std::string embd_name = word_end == std::string::npos ? str : str.substr(0, word_end);
+            embd_name             = trim(embd_name);
+            std::string embd_path = get_full_path(embd_dir, embd_name + ".pt");
+            if (embd_path.size() == 0) {
+                embd_path = get_full_path(embd_dir, embd_name + ".ckpt");
+            }
+            if (embd_path.size() == 0) {
+                embd_path = get_full_path(embd_dir, embd_name + ".safetensors");
+            }
+            if (embd_path.size() > 0) {
+                if (load_embedding(embd_name, embd_path, bpe_tokens)) {
+                    if (word_end != std::string::npos) {
+                        str = str.substr(word_end);
+                    } else {
+                        str = "";
+                    }
+                    return true;
+                }
+            }
+            return false;
+        };
+        std::vector<int> curr_tokens = tokenizer.encode(text, on_new_token_cb);
+        return curr_tokens;
+    }
+
+    std::string decode(const std::vector<int>& tokens) {
+        return tokenizer.decode(tokens);
+    }
+
+    void pad_tokens(std::vector<int>& tokens,
+                    std::vector<float>& weights,
+                    size_t max_length = 0,
+                    bool padding      = false) {
+        if (max_length > 0 && padding) {
+            size_t n = std::ceil(tokens.size() * 1.0 / (max_length - 2));
+            if (n == 0) {
+                n = 1;
+            }
+            size_t length = max_length * n;
+            LOG_DEBUG("token length: %llu", length);
+            std::vector<int> new_tokens;
+            std::vector<float> new_weights;
+            new_tokens.push_back(BOS_TOKEN_ID);
+            new_weights.push_back(1.0);
+            int token_idx = 0;
+            for (int i = 1; i < length; i++) {
+                if (token_idx >= tokens.size()) {
+                    break;
+                }
+                if (i % max_length == 0) {
+                    new_tokens.push_back(BOS_TOKEN_ID);
+                    new_weights.push_back(1.0);
+                } else if (i % max_length == max_length - 1) {
+                    new_tokens.push_back(EOS_TOKEN_ID);
+                    new_weights.push_back(1.0);
+                } else {
+                    new_tokens.push_back(tokens[token_idx]);
+                    new_weights.push_back(weights[token_idx]);
+                    token_idx++;
+                }
+            }
+
+            new_tokens.push_back(EOS_TOKEN_ID);
+            new_weights.push_back(1.0);
+            tokens  = new_tokens;
+            weights = new_weights;
+
+            if (padding) {
+                int pad_token_id = PAD_TOKEN_ID;
+                if (version == VERSION_2_x) {
+                    pad_token_id = 0;
+                }
+                tokens.insert(tokens.end(), length - tokens.size(), pad_token_id);
+                weights.insert(weights.end(), length - weights.size(), 1.0);
+            }
+        }
+    }
+
+    std::tuple<std::vector<int>, std::vector<float>, std::vector<bool>>
+    tokenize_with_trigger_token(std::string text,
+                                int num_input_imgs,
+                                int32_t image_token,
+                                size_t max_length = 0,
+                                bool padding      = false) {
+        auto parsed_attention = parse_prompt_attention(text);
+
+        {
+            std::stringstream ss;
+            ss << "[";
+            for (const auto& item : parsed_attention) {
+                ss << "['" << item.first << "', " << item.second << "], ";
+            }
+            ss << "]";
+            LOG_DEBUG("parse '%s' to %s", text.c_str(), ss.str().c_str());
+        }
+
+        auto on_new_token_cb = [&](std::string& str, std::vector<int32_t>& bpe_tokens) -> bool {
+            size_t word_end       = str.find(",");
+            std::string embd_name = word_end == std::string::npos ? str : str.substr(0, word_end);
+            embd_name             = trim(embd_name);
+            std::string embd_path = get_full_path(embd_dir, embd_name + ".pt");
+            if (embd_path.size() == 0) {
+                embd_path = get_full_path(embd_dir, embd_name + ".ckpt");
+            }
+            if (embd_path.size() == 0) {
+                embd_path = get_full_path(embd_dir, embd_name + ".safetensors");
+            }
+            if (embd_path.size() > 0) {
+                if (load_embedding(embd_name, embd_path, bpe_tokens)) {
+                    if (word_end != std::string::npos) {
+                        str = str.substr(word_end);
+                    } else {
+                        str = "";
+                    }
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        std::vector<int> tokens;
+        std::vector<float> weights;
+        std::vector<bool> class_token_mask;
+        int32_t class_idx = -1, tokens_acc = 0;
+        for (const auto& item : parsed_attention) {
+            std::vector<int> class_token_index;
+            std::vector<int> clean_input_ids;
+            const std::string& curr_text = item.first;
+            float curr_weight            = item.second;
+            // printf(" %s: %f \n", curr_text.c_str(), curr_weight);
+            std::vector<int> curr_tokens = tokenizer.encode(curr_text, on_new_token_cb);
+            int32_t clean_index          = 0;
+            for (uint32_t i = 0; i < curr_tokens.size(); i++) {
+                int token_id = curr_tokens[i];
+                if (token_id == image_token)
+                    class_token_index.push_back(clean_index - 1);
+                else {
+                    clean_input_ids.push_back(token_id);
+                    clean_index++;
+                }
+            }
+            // GGML_ASSERT(class_token_index.size() == 1); // PhotoMaker currently does not support multiple
+            //     trigger words in a single prompt.
+            if (class_token_index.size() == 1) {
+                // Expand the class word token and corresponding mask
+                int class_token = clean_input_ids[class_token_index[0]];
+                class_idx       = tokens_acc + class_token_index[0];
+                std::vector<int> clean_input_ids_tmp;
+                for (uint32_t i = 0; i < class_token_index[0]; i++)
+                    clean_input_ids_tmp.push_back(clean_input_ids[i]);
+                for (uint32_t i = 0; i < num_input_imgs; i++)
+                    clean_input_ids_tmp.push_back(class_token);
+                for (uint32_t i = class_token_index[0] + 1; i < clean_input_ids.size(); i++)
+                    clean_input_ids_tmp.push_back(clean_input_ids[i]);
+                clean_input_ids.clear();
+                clean_input_ids = clean_input_ids_tmp;
+            }
+            tokens_acc += clean_index;
+            tokens.insert(tokens.end(), clean_input_ids.begin(), clean_input_ids.end());
+            weights.insert(weights.end(), clean_input_ids.size(), curr_weight);
+        }
+        tokens.insert(tokens.begin(), BOS_TOKEN_ID);
+        weights.insert(weights.begin(), 1.0);
+
+        pad_tokens(tokens, weights, max_length, padding);
+
+        for (uint32_t i = 0; i < tokens.size(); i++) {
+            if (class_idx + 1 <= i && i < class_idx + 1 + num_input_imgs)
+                class_token_mask.push_back(true);
+            else
+                class_token_mask.push_back(false);
+        }
+
+        // printf("[");
+        // for (int i = 0; i < tokens.size(); i++) {
+        //     printf("%d, ", class_token_mask[i] ? 1 : 0);
+        // }
+        // printf("]\n");
+
+        // for (int i = 0; i < tokens.size(); i++) {
+        //     std::cout << tokens[i] << ":" << weights[i] << ", ";
+        // }
+        // std::cout << std::endl;
+
+        return std::make_tuple(tokens, weights, class_token_mask);
+    }
+
     std::pair<std::vector<int>, std::vector<float>> tokenize(std::string text,
                                                              size_t max_length = 0,
                                                              bool padding      = false) {
@@ -1057,28 +1345,8 @@ struct FrozenCLIPEmbedderWithCustomWords : public GGMLModule {
             tokens.insert(tokens.end(), curr_tokens.begin(), curr_tokens.end());
             weights.insert(weights.end(), curr_tokens.size(), curr_weight);
         }
-        tokens.insert(tokens.begin(), BOS_TOKEN_ID);
-        weights.insert(weights.begin(), 1.0);
 
-        if (max_length > 0) {
-            if (tokens.size() > max_length - 1) {
-                tokens.resize(max_length - 1);
-                weights.resize(max_length - 1);
-                tokens.push_back(EOS_TOKEN_ID);
-                weights.push_back(1.0);
-            } else {
-                tokens.push_back(EOS_TOKEN_ID);
-                weights.push_back(1.0);
-                if (padding) {
-                    int pad_token_id = PAD_TOKEN_ID;
-                    if (version == VERSION_2_x) {
-                        pad_token_id = 0;
-                    }
-                    tokens.insert(tokens.end(), max_length - tokens.size(), pad_token_id);
-                    weights.insert(weights.end(), max_length - weights.size(), 1.0);
-                }
-            }
-        }
+        pad_tokens(tokens, weights, max_length, padding);
 
         // for (int i = 0; i < tokens.size(); i++) {
         //     std::cout << tokens[i] << ":" << weights[i] << ", ";
@@ -1090,10 +1358,10 @@ struct FrozenCLIPEmbedderWithCustomWords : public GGMLModule {
 };
 
 struct FrozenCLIPVisionEmbedder : public GGMLModule {
-    CLIPVisionModel vision_model;
+    CLIPVisionModelProjection vision_model;
 
     FrozenCLIPVisionEmbedder(ggml_backend_t backend, ggml_type wtype)
-        : GGMLModule(backend, wtype) {
+        : vision_model(OPEN_CLIP_VIT_H_14, true), GGMLModule(backend, wtype) {
         vision_model.init(params_ctx, wtype);
     }
 
@@ -1101,16 +1369,8 @@ struct FrozenCLIPVisionEmbedder : public GGMLModule {
         return "clip_vision";
     }
 
-    size_t get_params_mem_size() {
-        return vision_model.get_params_mem_size();
-    }
-
-    size_t get_params_num() {
-        return vision_model.get_params_num();
-    }
-
     void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors, const std::string prefix) {
-        vision_model.get_param_tensors(tensors, prefix + "transformer.visual_model");
+        vision_model.get_param_tensors(tensors, prefix + "transformer");
     }
 
     struct ggml_cgraph* build_graph(struct ggml_tensor* pixel_values) {

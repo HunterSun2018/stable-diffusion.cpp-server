@@ -6,7 +6,7 @@
 
 /*================================================== AutoEncoderKL ===================================================*/
 
-#define VAE_GRAPH_SIZE 10240
+#define VAE_GRAPH_SIZE 20480
 
 class ResnetBlock : public UnaryBlock {
 protected:
@@ -524,14 +524,6 @@ struct AutoEncoderKL : public GGMLModule {
 
     std::string get_desc() {
         return "vae";
-    }
-
-    size_t get_params_mem_size() {
-        return ae.get_params_mem_size();
-    }
-
-    size_t get_params_num() {
-        return ae.get_params_num();
     }
 
     void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors, const std::string prefix) {

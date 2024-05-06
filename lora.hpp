@@ -11,12 +11,14 @@ struct LoraModel : public GGMLModule {
     std::string file_path;
     ModelLoader model_loader;
     bool load_failed = false;
+    bool applied     = false;
 
     LoraModel(ggml_backend_t backend,
               ggml_type wtype,
-              const std::string file_path = "")
+              const std::string& file_path = "",
+              const std::string& prefix    = "")
         : file_path(file_path), GGMLModule(backend, wtype) {
-        if (!model_loader.init_from_file(file_path)) {
+        if (!model_loader.init_from_file(file_path, prefix)) {
             load_failed = true;
         }
     }
@@ -25,15 +27,7 @@ struct LoraModel : public GGMLModule {
         return "lora";
     }
 
-    size_t get_params_num() {
-        return LORA_GRAPH_SIZE;
-    }
-
-    size_t get_params_mem_size() {
-        return model_loader.get_params_mem_size(NULL);
-    }
-
-    bool load_from_file() {
+    bool load_from_file(bool filter_tensor = false) {
         LOG_INFO("loading LoRA from '%s'", file_path.c_str());
 
         if (load_failed) {
@@ -45,6 +39,11 @@ struct LoraModel : public GGMLModule {
         auto on_new_tensor_cb = [&](const TensorStorage& tensor_storage, ggml_tensor** dst_tensor) -> bool {
             const std::string& name = tensor_storage.name;
 
+            if (filter_tensor && !contains(name, "lora")) {
+                // LOG_INFO("skipping LoRA tesnor '%s'", name.c_str());
+                return true;
+            }
+
             if (dry_run) {
                 struct ggml_tensor* real = ggml_new_tensor(params_ctx,
                                                            tensor_storage.type,
@@ -55,6 +54,7 @@ struct LoraModel : public GGMLModule {
                 auto real   = lora_tensors[name];
                 *dst_tensor = real;
             }
+
             return true;
         };
 
@@ -68,7 +68,7 @@ struct LoraModel : public GGMLModule {
         return true;
     }
 
-    struct ggml_cgraph* build_graph(std::map<std::string, struct ggml_tensor*> model_tensors) {
+    struct ggml_cgraph* build_lora_graph(std::map<std::string, struct ggml_tensor*> model_tensors) {
         struct ggml_cgraph* gf = ggml_new_graph_custom(compute_ctx, LORA_GRAPH_SIZE, false);
 
         std::set<std::string> applied_lora_tensors;
@@ -82,7 +82,16 @@ struct LoraModel : public GGMLModule {
             }
             k_tensor = k_tensor.substr(0, k_pos);
             replace_all_chars(k_tensor, '.', '_');
-            std::string lora_up_name   = "lora." + k_tensor + ".lora_up.weight";
+            // LOG_DEBUG("k_tensor %s", k_tensor.c_str());
+            std::string lora_up_name = "lora." + k_tensor + ".lora_up.weight";
+            if (lora_tensors.find(lora_up_name) == lora_tensors.end()) {
+                if (k_tensor == "model_diffusion_model_output_blocks_2_2_conv") {
+                    // fix for some sdxl lora, like lcm-lora-xl
+                    k_tensor     = "model_diffusion_model_output_blocks_2_1_conv";
+                    lora_up_name = "lora." + k_tensor + ".lora_up.weight";
+                }
+            }
+
             std::string lora_down_name = "lora." + k_tensor + ".lora_down.weight";
             std::string alpha_name     = "lora." + k_tensor + ".alpha";
             std::string scale_name     = "lora." + k_tensor + ".scale";
@@ -144,10 +153,26 @@ struct LoraModel : public GGMLModule {
             ggml_build_forward_expand(gf, final_weight);
         }
 
+        size_t total_lora_tensors_count   = 0;
+        size_t applied_lora_tensors_count = 0;
+
         for (auto& kv : lora_tensors) {
+            total_lora_tensors_count++;
             if (applied_lora_tensors.find(kv.first) == applied_lora_tensors.end()) {
                 LOG_WARN("unused lora tensor %s", kv.first.c_str());
+            } else {
+                applied_lora_tensors_count++;
             }
+        }
+        /* Don't worry if this message shows up twice in the logs per LoRA,
+         * this function is called once to calculate the required buffer size
+         * and then again to actually generate a graph to be used */
+        if (applied_lora_tensors_count != total_lora_tensors_count) {
+            LOG_WARN("Only (%lu / %lu) LoRA tensors have been applied",
+                     applied_lora_tensors_count, total_lora_tensors_count);
+        } else {
+            LOG_DEBUG("(%lu / %lu) LoRA tensors applied successfully",
+                      applied_lora_tensors_count, total_lora_tensors_count);
         }
 
         return gf;
@@ -155,7 +180,7 @@ struct LoraModel : public GGMLModule {
 
     void apply(std::map<std::string, struct ggml_tensor*> model_tensors, int n_threads) {
         auto get_graph = [&]() -> struct ggml_cgraph* {
-            return build_graph(model_tensors);
+            return build_lora_graph(model_tensors);
         };
         GGMLModule::compute(get_graph, n_threads, true);
     }
