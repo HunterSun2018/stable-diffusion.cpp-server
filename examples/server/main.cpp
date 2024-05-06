@@ -85,7 +85,7 @@ struct SDParams {
     std::string input_id_images_path;
     sd_type_t wtype = SD_TYPE_COUNT;
     std::string lora_model_dir;
-    std::string output_path = "shared/";
+    std::string output_path = "generations/";
     std::string input_path;
     std::string control_image_path;
 
@@ -694,9 +694,9 @@ void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
         res.set_content(json(content).dump(), "application/json");
     });
 
-    auto ret = svr.set_mount_point("/generations", "./shared");
+    auto ret = svr.set_mount_point("/" + sd_params.output_path, sd_params.output_path);
     if (!ret) {
-        throw std::runtime_error("the folder 'share' doest not exist.");
+        throw std::runtime_error("the folder 'shared' doest not exist.");
     }
 
     // The handler is called right before the response is sent to a client
