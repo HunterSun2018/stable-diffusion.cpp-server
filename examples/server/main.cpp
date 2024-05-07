@@ -325,6 +325,8 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 break;
             }
             params.output_path = argv[i];
+            if(*params.output_path.rbegin()!='/')
+                params.output_path += '/';
         } else if (arg == "-p" || arg == "--prompt") {
             if (++i >= argc) {
                 invalid_arg = true;
