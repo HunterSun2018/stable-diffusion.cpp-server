@@ -5,6 +5,7 @@
 // increase max payload length to allow use of larger context size
 #define CPPHTTPLIB_FORM_URL_ENCODED_PAYLOAD_MAX_LENGTH 1048576
 
+#include <fmt/core.h>
 #include <signal.h>
 #include <atomic>
 #include <chrono>
@@ -587,7 +588,6 @@ struct ResponseContent {
 
 class sd_http_server {
 private:
-    
 public:
     sd_http_server(/* args */);
     ~sd_http_server();
@@ -634,8 +634,8 @@ void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
 
     auto ret = svr.set_mount_point("/generations", sd_params.output_path);
     if (!ret) {
-        throw std::runtime_error(std::format("the folder '{0}' doest not exist.", sd_params.output_path));
-    }    
+        throw std::runtime_error(fmt::format("the folder '{0}' doest not exist.", sd_params.output_path));
+    }
 
     /* data */
     std::random_device rd;
@@ -684,24 +684,24 @@ void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
         std::vector<std::string> output;
 
         for (size_t i = 0; i < params.batch_count; i++) {
-            auto hash = params.hash();
+            auto hash     = params.hash();
             auto img_name = params.output_path + std::to_string(hash) + ".png";
 
-            stbi_write_png(img_name.c_str(),
-                           results[i].width, results[i].height, results[i].channel,
-                           results[i].data, 0, get_image_params(params, params.seed + i).c_str());
+            int ret = stbi_write_png(img_name.c_str(),
+                                     results[i].width, results[i].height, results[i].channel,
+                                     results[i].data, 0, get_image_params(params, params.seed + i).c_str());
+            if(ret !=1 )
+                std::cerr << fmt::format("stbi failed to write png file {} ", img_name) << std::endl;
 
-            output.push_back("generations/"+ std::to_string(hash) + ".png");
+            output.push_back("generations/" + std::to_string(hash) + ".png");
         }
 
         ResponseContent content;
         content.status = "success";
         content.output = move(output);
-        
+
         res.set_content(json(content).dump(), "application/json");
     });
-
-    
 
     // The handler is called right before the response is sent to a client
     // svr.set_file_request_handler([](const httplib::Request& req, httplib::Response& res) {
