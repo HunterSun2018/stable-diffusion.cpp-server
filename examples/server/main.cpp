@@ -325,7 +325,7 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 break;
             }
             params.output_path = argv[i];
-            if(*params.output_path.rbegin()!='/')
+            if (*params.output_path.rbegin() != '/')
                 params.output_path += '/';
         } else if (arg == "-p" || arg == "--prompt") {
             if (++i >= argc) {
@@ -657,11 +657,15 @@ void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
         if (data.contains("steps"))
             data.at("steps").get_to(params.sample_steps);
 
-        if (data.contains("width"))
+        if (data.contains("width")) {
             data.at("width").get_to(params.width);
+            params.width = std::min(params.width, 1024);
+        }
 
-        if (data.contains("height"))
+        if (data.contains("height")) {
             data.at("height").get_to(params.height);
+            params.height = std::min(params.height, 1024);
+        }
 
         if (data.contains("seed"))
             data.at("seed").get_to(params.seed);
@@ -698,7 +702,7 @@ void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
             int ret = stbi_write_png(img_name.c_str(),
                                      results[i].width, results[i].height, results[i].channel,
                                      results[i].data, 0, get_image_params(params, params.seed + i).c_str());
-            if(ret !=1 )
+            if (ret != 1)
                 std::cerr << fmt::format("stbi failed to write png file {} ", img_name) << std::endl;
 
             output.push_back("generations/" + std::to_string(hash) + ".png");
