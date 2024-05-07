@@ -575,9 +575,19 @@ void sd_log_cb(enum sd_log_level_t level, const char* log, void* data) {
         fflush(stderr);
     }
 }
+
+struct ResponseContent {
+    std::string status;
+    double generationTime = 0.0;
+    int id                = 1;
+    std::vector<std::string> output;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE(ResponseContent, status, id, output)
+};
+
 class sd_http_server {
 private:
-    /* data */
+    
 public:
     sd_http_server(/* args */);
     ~sd_http_server();
@@ -590,15 +600,6 @@ sd_http_server::sd_http_server(/* args */) {
 
 sd_http_server::~sd_http_server() {
 }
-
-struct ResponseContent {
-    std::string status;
-    double generationTime = 0.0;
-    int id                = 1;
-    std::vector<std::string> output;
-
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE(ResponseContent, status, id, output)
-};
 
 void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
     // HTTP
@@ -631,6 +632,12 @@ void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
     svr.set_read_timeout(30);
     svr.set_write_timeout(30);
 
+    auto ret = svr.set_mount_point("/generations", sd_params.output_path);
+    if (!ret) {
+        throw std::runtime_error(std::format("the folder '{0}' doest not exist.", sd_params.output_path));
+    }    
+
+    /* data */
     std::random_device rd;
     std::uniform_int_distribution<int> dist(0, 9999999);
 
@@ -677,27 +684,24 @@ void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
         std::vector<std::string> output;
 
         for (size_t i = 0; i < params.batch_count; i++) {
-            auto img_name = params.output_path + std::to_string(params.hash()) + ".png";
+            auto hash = params.hash();
+            auto img_name = params.output_path + std::to_string(hash) + ".png";
 
             stbi_write_png(img_name.c_str(),
                            results[i].width, results[i].height, results[i].channel,
                            results[i].data, 0, get_image_params(params, params.seed + i).c_str());
 
-            output.push_back(img_name);
+            output.push_back("generations/"+ std::to_string(hash) + ".png");
         }
 
         ResponseContent content;
         content.status = "success";
         content.output = move(output);
-        json jcontent  = content;
-
+        
         res.set_content(json(content).dump(), "application/json");
     });
 
-    auto ret = svr.set_mount_point("/" + sd_params.output_path, sd_params.output_path);
-    if (!ret) {
-        throw std::runtime_error("the folder 'shared' doest not exist.");
-    }
+    
 
     // The handler is called right before the response is sent to a client
     // svr.set_file_request_handler([](const httplib::Request& req, httplib::Response& res) {
@@ -781,7 +785,7 @@ int main(int argc, const char* argv[]) {
                                   params.stacked_id_embeddings_path.c_str(),
                                   vae_decode_only,
                                   params.vae_tiling,
-                                  true,
+                                  false,
                                   params.n_threads,
                                   params.wtype,
                                   params.rng_type,
