@@ -658,10 +658,10 @@ void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
             data.at("steps").get_to(params.sample_steps);
 
         if (data.contains("width"))
-            data.at("width").get_to(params.sample_steps);
+            data.at("width").get_to(params.width);
 
         if (data.contains("height"))
-            data.at("height").get_to(params.sample_steps);
+            data.at("height").get_to(params.height);
 
         if (data.contains("seed"))
             data.at("seed").get_to(params.seed);
