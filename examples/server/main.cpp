@@ -4,7 +4,10 @@
 #endif
 // increase max payload length to allow use of larger context size
 #define CPPHTTPLIB_FORM_URL_ENCODED_PAYLOAD_MAX_LENGTH 1048576
+
+#ifdef SSL3
 #define CPPHTTPLIB_OPENSSL_SUPPORT
+#endif 
 
 #include <fmt/core.h>
 #include <signal.h>
@@ -724,7 +727,7 @@ void sd_http_server::run(Server& svr, sd_ctx_t* sd_ctx, const SDParams& sd_param
             if (ret != 1)
                 std::cerr << fmt::format("stbi failed to write png file {} ", img_name) << std::endl;
 
-            output.push_back("generations/" + std::to_string(hash) + ".png");
+            output.push_back("/generations/" + std::to_string(hash) + ".png");
         }
 
         ResponseContent content;
@@ -834,9 +837,11 @@ int main(int argc, const char* argv[]) {
         sd_http_server server;
 
         if (!params.cert.empty() && !params.key.empty()) {
+#ifdef SSL3
             // HTTPS
             httplib::SSLServer svr(params.cert.c_str(), params.key.c_str());
             server.run<httplib::SSLServer>(svr, sd_ctx, params);
+#endif 
         } else {
             // HTTP
             httplib::Server svr;
