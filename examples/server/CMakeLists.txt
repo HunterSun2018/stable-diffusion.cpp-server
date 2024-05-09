@@ -2,5 +2,5 @@ set(TARGET sd-server)
 
 add_executable(${TARGET} main.cpp)
 install(TARGETS ${TARGET} RUNTIME)
-target_link_libraries(${TARGET} PRIVATE stable-diffusion fmt ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(${TARGET} PRIVATE stable-diffusion fmt ssl crypto ${CMAKE_THREAD_LIBS_INIT})
 target_compile_features(${TARGET} PUBLIC cxx_std_20)

@@ -4,6 +4,7 @@
 #endif
 // increase max payload length to allow use of larger context size
 #define CPPHTTPLIB_FORM_URL_ENCODED_PAYLOAD_MAX_LENGTH 1048576
+#define CPPHTTPLIB_OPENSSL_SUPPORT
 
 #include <fmt/core.h>
 #include <signal.h>
@@ -124,6 +125,8 @@ struct SDParams {
 
     std::string host = "0.0.0.0";
     uint16_t port    = 8080;
+    std::string cert;  // SSL certificate
+    std::string key;   // SSL private key
 
     size_t hash() const {
         return Hash::hash(this->prompt, this->negative_prompt, this->seed);
@@ -463,6 +466,18 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 break;
             }
             params.port = std::stoi(argv[i]);
+        } else if (arg == "--cert") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            params.cert = std::stoi(argv[i]);
+        } else if (arg == "--key") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            params.key = std::stoi(argv[i]);
         } else if (arg == "-h" || arg == "--help") {
             print_usage(argc, argv);
             exit(0);
@@ -594,7 +609,8 @@ public:
     sd_http_server(/* args */);
     ~sd_http_server();
 
-    void run(sd_ctx_t* sd_ctx, const SDParams& params);
+    template <typename Server>
+    void run(Server& svr, sd_ctx_t* sd_ctx, const SDParams& params);
 };
 
 sd_http_server::sd_http_server(/* args */) {
@@ -603,9 +619,12 @@ sd_http_server::sd_http_server(/* args */) {
 sd_http_server::~sd_http_server() {
 }
 
-void sd_http_server::run(sd_ctx_t* sd_ctx, const SDParams& sd_params) {
+template <typename Server>
+void sd_http_server::run(Server& svr, sd_ctx_t* sd_ctx, const SDParams& sd_params) {
     // HTTP
-    httplib::Server svr;
+    // httplib::Server svr;
+    // HTTPS
+    // httplib::SSLServer svr(sd_params.cert.c_str(), sd_params.key.c_str());
 
     svr.set_default_headers({{"Server", "llama.cpp"}});
     svr.Get("/txt2img", [](const httplib::Request&, httplib::Response& res) {
@@ -814,7 +833,16 @@ int main(int argc, const char* argv[]) {
     try {
         sd_http_server server;
 
-        server.run(sd_ctx, params);
+        if (!params.cert.empty() && !params.key.empty()) {
+            // HTTPS
+            httplib::SSLServer svr(params.cert.c_str(), params.key.c_str());
+            server.run<httplib::SSLServer>(svr, sd_ctx, params);
+        } else {
+            // HTTP
+            httplib::Server svr;
+            server.run<httplib::Server>(svr, sd_ctx, params);
+        }
+
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
     }
