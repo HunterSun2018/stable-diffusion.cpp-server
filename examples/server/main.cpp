@@ -7,7 +7,7 @@
 
 #ifdef SSL3
 #define CPPHTTPLIB_OPENSSL_SUPPORT
-#endif 
+#endif
 
 #include <fmt/core.h>
 #include <signal.h>
@@ -597,13 +597,23 @@ void sd_log_cb(enum sd_log_level_t level, const char* log, void* data) {
     }
 }
 
+struct MetaData {
+    std::string prompt;
+    std::string negative;
+    int64_t seed;
+    int steps;
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE(MetaData, prompt, negative, seed, steps)
+};
+
 struct ResponseContent {
     std::string status;
     double generationTime = 0.0;
     int id                = 1;
     std::vector<std::string> output;
+    MetaData metaData;
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE(ResponseContent, status, id, output)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE(ResponseContent, status, id, output, metaData)
 };
 
 class sd_http_server {
@@ -663,7 +673,7 @@ void sd_http_server::run(Server& svr, sd_ctx_t* sd_ctx, const SDParams& sd_param
 
     /* data */
     std::random_device rd;
-    std::uniform_int_distribution<int> dist(0, 9999999);
+    std::uniform_int_distribution<int64_t> dist(0, std::numeric_limits<int64_t>::max());
 
     svr.Post("/txt2img", [&](const httplib::Request& req, httplib::Response& res) {
         res.set_header("Access-Control-Allow-Origin", req.get_header_value("Origin"));
@@ -731,8 +741,9 @@ void sd_http_server::run(Server& svr, sd_ctx_t* sd_ctx, const SDParams& sd_param
         }
 
         ResponseContent content;
-        content.status = "success";
-        content.output = move(output);
+        content.status   = "success";
+        content.output   = move(output);
+        content.metaData = MetaData{params.prompt, params.negative_prompt, params.seed, params.sample_steps};
 
         res.set_content(json(content).dump(), "application/json");
     });
@@ -841,7 +852,7 @@ int main(int argc, const char* argv[]) {
             // HTTPS
             httplib::SSLServer svr(params.cert.c_str(), params.key.c_str());
             server.run<httplib::SSLServer>(svr, sd_ctx, params);
-#endif 
+#endif
         } else {
             // HTTP
             httplib::Server svr;
