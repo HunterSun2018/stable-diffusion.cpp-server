@@ -81,6 +81,10 @@ struct SDParams {
     SDMode mode   = TXT2IMG;
 
     std::string model_path;
+    std::string clip_l_path;
+    std::string clip_g_path;
+    std::string t5xxl_path;
+    std::string diffusion_model_path;
     std::string vae_path;
     std::string taesd_path;
     std::string esrgan_path;
@@ -98,6 +102,7 @@ struct SDParams {
     std::string negative_prompt;
     float min_cfg     = 1.0f;
     float cfg_scale   = 7.0f;
+    float guidance    = 3.5f;
     float style_ratio = 20.f;
     int clip_skip     = -1;  // <= 0 represents unspecified
     int width         = 1024;
@@ -713,6 +718,7 @@ void sd_http_server::run(Server& svr, sd_ctx_t* sd_ctx, const SDParams& sd_param
                                       params.negative_prompt.c_str(),
                                       params.clip_skip,
                                       params.cfg_scale,
+                                      params.guidance,
                                       params.width,
                                       params.height,
                                       params.sample_method,
@@ -822,6 +828,10 @@ int main(int argc, const char* argv[]) {
     }
 
     sd_ctx_t* sd_ctx = new_sd_ctx(params.model_path.c_str(),
+                                  params.clip_l_path.c_str(),
+                                  params.clip_g_path.c_str(),
+                                  params.t5xxl_path.c_str(),
+                                  params.diffusion_model_path.c_str(),
                                   params.vae_path.c_str(),
                                   params.taesd_path.c_str(),
                                   params.controlnet_path.c_str(),
