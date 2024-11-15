@@ -257,6 +257,30 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 break;
             }
             params.model_path = argv[i];
+        } else if (arg == "--clip_l") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            params.clip_l_path = argv[i];
+        } else if (arg == "--clip_g") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            params.clip_g_path = argv[i];
+        } else if (arg == "--t5xxl") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            params.t5xxl_path = argv[i];
+        } else if (arg == "--diffusion-model") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            params.diffusion_model_path = argv[i];
         } else if (arg == "--vae") {
             if (++i >= argc) {
                 invalid_arg = true;
